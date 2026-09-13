@@ -56,7 +56,13 @@ def clean(df, window_days=DETREND_WINDOW_DAYS):
     good = sigma_clip(f)
     t, f, q = t[good], f[good], q[good]
     cadence = np.median(np.diff(t))
-    trend = sg_detrend(f, cadence, window_days)
+    # detrend per-quarter to avoid SG edge artifacts at quarter boundaries
+    trend = np.ones_like(f)
+    for qq in np.unique(q):
+        s = q == qq
+        if s.sum() < 10:
+            continue
+        trend[s] = sg_detrend(f[s], cadence, window_days)
     ok = np.isfinite(trend) & (trend > 0)
     return t[ok], f[ok] / trend[ok]
 
