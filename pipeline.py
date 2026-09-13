@@ -24,22 +24,20 @@ SDE_THRESHOLD = 10.0
 
 
 def sg_detrend(f, cadence, window_days=DETREND_WINDOW_DAYS, polyorder=2):
-    """Savitzky-Golay detrend: smoother than running median, better edge handling."""
-    k = max(polyorder + 2, int(window_days / cadence) | 1)  # must be odd
+    """Savitzky-Golay detrend per segment."""
+    k = max(polyorder + 2, int(window_days / cadence) | 1)
     if k % 2 == 0:
         k += 1
-    trend = savgol_filter(f, window_length=k, polyorder=polyorder)
-    return trend
+    return savgol_filter(f, window_length=k, polyorder=polyorder)
 
 
 def sigma_clip(f, sigma=4, iters=3):
-    """Iteratively mask outliers. Returns boolean mask of good points."""
+    """Iteratively mask outliers, returns boolean mask of good points."""
     mask = np.ones(len(f), bool)
     for _ in range(iters):
         med = np.median(f[mask])
         mad = np.median(np.abs(f[mask] - med))
-        std = 1.4826 * mad
-        mask = np.abs(f - med) < sigma * std
+        mask = np.abs(f - med) < sigma * (1.4826 * mad)
     return mask
 
 
@@ -52,11 +50,9 @@ def clean(df, window_days=DETREND_WINDOW_DAYS):
         s = q == qq
         med = np.median(f[s])
         f[s] = f[s] / med if med > 0 else 1.0
-    # mask outliers before detrending
     good = sigma_clip(f)
     t, f, q = t[good], f[good], q[good]
     cadence = np.median(np.diff(t))
-    # detrend per-quarter to avoid SG edge artifacts at quarter boundaries
     trend = np.ones_like(f)
     for qq in np.unique(q):
         s = q == qq
@@ -76,7 +72,7 @@ def sde(power, i):
 def search(t, f):
     bls = BoxLeastSquares(t, f)
     baseline = t.max() - t.min()
-    pmax = min(PERIOD_MAX, baseline / 2.0)  # allow 2 transits minimum
+    pmax = min(PERIOD_MAX, baseline / 2.0)
     coarse = np.exp(np.linspace(np.log(PERIOD_MIN), np.log(pmax), N_COARSE))
     res = bls.power(coarse, DURATIONS, objective="likelihood")
     power = np.asarray(res.power)
@@ -94,22 +90,25 @@ def search(t, f):
     best = None
     for i in peaks:
         p0 = coarse[i]
-        fine = np.linspace(p0 * 0.98, p0 * 1.02, N_FINE)
-        fine = fine[fine > PERIOD_MIN]
-        if len(fine) < 10:
-            continue
-        r = bls.power(fine, DURATIONS, objective="likelihood")
-        p = np.asarray(r.power)
-        j = int(np.nanargmax(p))
-        score = sde(power, i)
-        if best is None or score > best["sde"]:
-            best = {
-                "period": float(r.period[j]),
-                "depth_ppm": float(r.depth[j] * 1e6),
-                "duration_hours": float(r.duration[j] * 24),
-                "t0": float(r.transit_time[j]),
-                "sde": score,
-            }
+        for alias in [p0 * 0.5, p0, p0 * 2.0, p0 * 3.0]:
+            if alias < PERIOD_MIN or alias > pmax:
+                continue
+            fine = np.linspace(alias * 0.98, alias * 1.02, N_FINE)
+            fine = fine[(fine > PERIOD_MIN) & (fine <= pmax)]
+            if len(fine) < 10:
+                continue
+            r = bls.power(fine, DURATIONS, objective="likelihood")
+            p = np.asarray(r.power)
+            j = int(np.nanargmax(p))
+            score = sde(power, i)
+            if best is None or score > best["sde"]:
+                best = {
+                    "period": float(r.period[j]),
+                    "depth_ppm": float(r.depth[j] * 1e6),
+                    "duration_hours": float(r.duration[j] * 24),
+                    "t0": float(r.transit_time[j]),
+                    "sde": score,
+                }
     return best or {"period": np.nan, "depth_ppm": np.nan,
                     "duration_hours": np.nan, "t0": np.nan, "sde": 0.0}
 
