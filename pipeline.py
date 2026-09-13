@@ -20,7 +20,7 @@ N_COARSE = 50000
 N_PEAKS = 8
 N_FINE = 600
 DURATIONS = np.array([0.05, 0.1, 0.2, 0.4, 0.8])
-SDE_THRESHOLD = 10.0
+SDE_THRESHOLD = 20.0
 
 
 def sg_detrend(f, cadence, window_days=DETREND_WINDOW_DAYS, polyorder=2):
@@ -141,22 +141,9 @@ def run_split(directory):
             print(f"  {sid} failed: {e}")
             r = {"sde": 0.0}
         s = r.get("sde", 0.0)
-        # use ML model confidence if available, else fall back to SDE logistic
-        if model and not np.isnan(r.get("period", np.nan)):
-            try:
-                feats = extract_features(t, f, r)
-                X = np.array([[feats[c] for c in model["features"]]])
-                X = model["scaler"].transform(X)
-                raw_conf = float(model["clf"].predict_proba(X)[0, 1])
-                # apply Platt calibration if available
-                if "platt" in model:
-                    conf = float(model["platt"].predict_proba([[raw_conf]])[0, 1])
-                else:
-                    conf = raw_conf
-            except Exception:
-                conf = confidence_from_sde(s)
-        else:
-            conf = confidence_from_sde(s)
+        # use raw SDE-based confidence for ranking (ML scores too compressed)
+        conf = confidence_from_sde(s)
+        hit = s > SDE_THRESHOLD
         # apply vetting: reduce confidence for flagged candidates
         if not np.isnan(r.get("period", np.nan)):
             try:
