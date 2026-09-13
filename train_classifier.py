@@ -1,12 +1,13 @@
 """
 Train a Random Forest classifier on BLS features from the train set.
 Usage: python train_classifier.py
-Saves model to model.pkl
+Saves model to model.pkl. Caches BLS results to train_bls_cache.csv.
 """
 import glob
 import os
 import pickle
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -20,9 +21,26 @@ from pipeline import clean, search
 warnings.filterwarnings("ignore")
 
 TRAIN_DIR = "train"
+CACHE_FILE = "train_bls_cache.csv"
+N_WORKERS = 4
 FEATURE_COLS = ["sde", "depth_ppm", "duration_hours", "period",
                 "scatter_ppm", "snr", "n_transits", "odd_even_ratio",
                 "secondary_depth_ppm"]
+
+
+def process_star(path):
+    """Run clean + search + extract_features for one star. Returns (kepid, r, feats)."""
+    warnings.filterwarnings("ignore")
+    kepid = int(os.path.basename(path).replace("KIC_", "").replace(".parquet", ""))
+    try:
+        t, f = clean(pd.read_parquet(path))
+        if t is None:
+            return kepid, None, None
+        r = search(t, f)
+        feats = extract_features(t, f, r)
+        return kepid, r, feats
+    except Exception as e:
+        return kepid, None, None
 
 
 def build_dataset(directory, labels_csv, truth_csv):
@@ -31,60 +49,56 @@ def build_dataset(directory, labels_csv, truth_csv):
     merged = labels.merge(truth[["kepid", "injected"]], on="kepid", how="left")
     merged["has_planet"] = ((merged["label"] == 1) | (merged["injected"] == 1)).fillna(0).astype(int)
 
-    # load cached BLS results if available
-    cache_file = f"{directory}_bls_cache.csv"
-    if os.path.exists(cache_file):
-        print(f"  Loading cached BLS results from {cache_file}")
-        cache = pd.read_csv(cache_file)
-    else:
-        cache = pd.DataFrame()
+    # load existing cache
+    cache = pd.read_csv(CACHE_FILE) if os.path.exists(CACHE_FILE) else pd.DataFrame()
+    cached_ids = set(cache.kepid.values) if not cache.empty else set()
+
+    all_paths = sorted(glob.glob(f"{directory}/*.parquet"))
+    pending = [p for p in all_paths
+               if int(os.path.basename(p).replace("KIC_", "").replace(".parquet", ""))
+               not in cached_ids]
+
+    print(f"  {len(cached_ids)} cached, {len(pending)} to process ({N_WORKERS} workers)")
+
+    new_cache_rows = []
+    done = 0
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as ex:
+        futures = {ex.submit(process_star, p): p for p in pending}
+        for fut in as_completed(futures):
+            kepid, r, feats = fut.result()
+            done += 1
+            if r is not None:
+                new_cache_rows.append({**r, "kepid": kepid})
+                # flush cache every star
+                new_df = pd.DataFrame(new_cache_rows)
+                combined = pd.concat([cache, new_df]).drop_duplicates("kepid")
+                combined.to_csv(CACHE_FILE, index=False)
+            print(f"  [{len(cached_ids)+done}/{len(all_paths)}] KIC_{kepid}"
+                  f"  SDE={r['sde']:.1f}" if r else f"  [{done}] KIC_{kepid} FAILED",
+                  flush=True)
+
+    # reload full cache
+    cache = pd.read_csv(CACHE_FILE) if os.path.exists(CACHE_FILE) else pd.DataFrame()
 
     rows = []
-    paths = sorted(glob.glob(f"{directory}/*.parquet"))
-    new_cache_rows = []
-
-    for i, path in enumerate(paths, 1):
+    for path in all_paths:
         kepid = int(os.path.basename(path).replace("KIC_", "").replace(".parquet", ""))
         row = merged[merged.kepid == kepid]
-        if row.empty:
+        if row.empty or cache.empty or kepid not in cache.kepid.values:
             continue
         label = int(row.has_planet.values[0])
-
-        # use cache if available
-        if not cache.empty and kepid in cache.kepid.values:
-            cr = cache[cache.kepid == kepid].iloc[0].to_dict()
-            r = {k: cr[k] for k in ["period", "depth_ppm", "duration_hours", "t0", "sde"]}
-            try:
-                t, f = clean(pd.read_parquet(path))
-                if t is None:
-                    continue
-                feats = extract_features(t, f, r)
-                feats["label"] = label
-                feats["kepid"] = kepid
-                rows.append(feats)
-            except Exception as e:
-                print(f"  skipping {kepid}: {e}")
-            print(f"  [{i}/{len(paths)}] KIC_{kepid} (cached) SDE={r['sde']:.1f}", flush=True)
-            continue
-
+        cr = cache[cache.kepid == kepid].iloc[0].to_dict()
+        r = {k: cr[k] for k in ["period", "depth_ppm", "duration_hours", "t0", "sde"]}
         try:
             t, f = clean(pd.read_parquet(path))
             if t is None:
                 continue
-            r = search(t, f)
-            # save to cache immediately after each star
-            new_row = pd.DataFrame([{**r, "kepid": kepid}])
-            cache = pd.concat([cache, new_row]).drop_duplicates("kepid")
-            cache.to_csv(cache_file, index=False)
             feats = extract_features(t, f, r)
             feats["label"] = label
             feats["kepid"] = kepid
             rows.append(feats)
-        except Exception as e:
-            print(f"  skipping {kepid}: {e}")
+        except Exception:
             continue
-        print(f"  [{i}/{len(paths)}] KIC_{kepid} SDE={r.get('sde', 0):.1f}", flush=True)
-
     return pd.DataFrame(rows)
 
 
