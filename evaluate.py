@@ -19,6 +19,7 @@ from pipeline import clean, search, confidence_from_sde, SDE_THRESHOLD
 warnings.filterwarnings("ignore")
 
 DEV_DIR = "dev"
+DEV_CACHE = "dev_bls_cache.csv"
 
 
 def evaluate():
@@ -27,6 +28,8 @@ def evaluate():
     merged = labels.merge(truth[["kepid", "injected", "bin", "depth_ppm"]],
                           on="kepid", how="left")
     merged["has_planet"] = ((merged["label"] == 1) | (merged["injected"] == 1)).fillna(0).astype(int)
+
+    cache = pd.read_csv(DEV_CACHE) if os.path.exists(DEV_CACHE) else pd.DataFrame()
 
     model = None
     if os.path.exists("model.pkl"):
@@ -47,11 +50,17 @@ def evaluate():
         depth = float(row.depth_ppm.values[0]) if not pd.isna(row.depth_ppm.values[0]) else 0.0
         bin_name = row.bin.values[0] if "bin" in row.columns else "unknown"
 
-        try:
+        # use cache if available, else run search
+        if not cache.empty and kepid in cache.kepid.values:
+            cr = cache[cache.kepid == kepid].iloc[0].to_dict()
+            r = {k: cr[k] for k in ["period", "depth_ppm", "duration_hours", "t0", "sde"]}
             t, f = clean(pd.read_parquet(path))
-            r = search(t, f) if t is not None else {"sde": 0.0}
-        except Exception:
-            r = {"sde": 0.0}
+        else:
+            try:
+                t, f = clean(pd.read_parquet(path))
+                r = search(t, f) if t is not None else {"sde": 0.0}
+            except Exception:
+                r = {"sde": 0.0}
 
         s = r.get("sde", 0.0)
         if model and not np.isnan(r.get("period", np.nan)):
