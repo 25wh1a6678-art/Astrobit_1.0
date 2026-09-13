@@ -1,5 +1,7 @@
 # Astrobit 1.0 — AI-Based Detection of Earth-Like Exoplanets in Kepler Data
 
+**Team:** 25wh1a6678
+
 ## Pipeline Overview
 
 ```
