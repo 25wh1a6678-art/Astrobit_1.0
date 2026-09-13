@@ -127,13 +127,15 @@ def load_model():
 
 def run_split(directory):
     from features import extract_features
+    from vetting import vet_candidate
     model = load_model()
     out = []
     paths = sorted(glob.glob(f"{directory}/*.parquet"))
     for i, path in enumerate(paths, 1):
         sid = os.path.basename(path)[:-8]
         try:
-            t, f = clean(pd.read_parquet(path))
+            df = pd.read_parquet(path)
+            t, f = clean(df)
             r = search(t, f) if t is not None else {"sde": 0.0}
         except Exception as e:
             print(f"  {sid} failed: {e}")
@@ -146,13 +148,19 @@ def run_split(directory):
                 X = np.array([[feats[c] for c in model["features"]]])
                 X = model["scaler"].transform(X)
                 conf = float(model["clf"].predict_proba(X)[0, 1])
-                hit = conf > 0.5
             except Exception:
                 conf = confidence_from_sde(s)
-                hit = s > SDE_THRESHOLD
         else:
             conf = confidence_from_sde(s)
-            hit = s > SDE_THRESHOLD
+        # apply vetting: reduce confidence for flagged candidates
+        if not np.isnan(r.get("period", np.nan)):
+            try:
+                q = df.quarter.values[(df.quality.values == 0) & np.isfinite(df.flux.values)]
+                vet = vet_candidate(t, f, q[:len(t)], r)
+                conf = conf * vet["vetting_score"]
+            except Exception:
+                pass
+        hit = conf > 0.5
         out.append({
             "star_id": sid,
             "prediction": int(hit),
