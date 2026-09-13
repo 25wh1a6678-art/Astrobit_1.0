@@ -117,7 +117,17 @@ def confidence_from_sde(s, midpoint=SDE_THRESHOLD, steepness=0.4):
     return float(1.0 / (1.0 + np.exp(-steepness * (s - midpoint))))
 
 
+def load_model():
+    import pickle
+    if os.path.exists("model.pkl"):
+        with open("model.pkl", "rb") as fh:
+            return pickle.load(fh)
+    return None
+
+
 def run_split(directory):
+    from features import extract_features
+    model = load_model()
     out = []
     paths = sorted(glob.glob(f"{directory}/*.parquet"))
     for i, path in enumerate(paths, 1):
@@ -129,11 +139,24 @@ def run_split(directory):
             print(f"  {sid} failed: {e}")
             r = {"sde": 0.0}
         s = r.get("sde", 0.0)
-        hit = s > SDE_THRESHOLD
+        # use ML model confidence if available, else fall back to SDE logistic
+        if model and not np.isnan(r.get("period", np.nan)):
+            try:
+                feats = extract_features(t, f, r)
+                X = np.array([[feats[c] for c in model["features"]]])
+                X = model["scaler"].transform(X)
+                conf = float(model["clf"].predict_proba(X)[0, 1])
+                hit = conf > 0.5
+            except Exception:
+                conf = confidence_from_sde(s)
+                hit = s > SDE_THRESHOLD
+        else:
+            conf = confidence_from_sde(s)
+            hit = s > SDE_THRESHOLD
         out.append({
             "star_id": sid,
             "prediction": int(hit),
-            "confidence": round(confidence_from_sde(s), 4),
+            "confidence": round(conf, 4),
             "period": round(r["period"], 5) if hit else None,
             "depth_ppm": round(r["depth_ppm"], 1) if hit else None,
             "duration_hours": round(r["duration_hours"], 3) if hit else None,
