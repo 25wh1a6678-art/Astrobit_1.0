@@ -42,8 +42,7 @@ def clean(df, window_days=DETREND_WINDOW_DAYS):
         med = np.median(f[s])
         f[s] = f[s] / med if med > 0 else 1.0
     cadence = np.median(np.diff(t))
-    k = max(5, int(window_days / cadence) | 1)
-    trend = pd.Series(f).rolling(k, center=True, min_periods=k // 3).median().values
+    trend = sg_detrend(f, cadence, window_days)
     ok = np.isfinite(trend) & (trend > 0)
     return t[ok], f[ok] / trend[ok]
 
