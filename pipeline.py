@@ -75,7 +75,8 @@ def sde(power, i):
 
 def search(t, f):
     bls = BoxLeastSquares(t, f)
-    pmax = min(PERIOD_MAX, (t.max() - t.min()) / 3.0)
+    baseline = t.max() - t.min()
+    pmax = min(PERIOD_MAX, baseline / 2.0)  # allow 2 transits minimum
     coarse = np.exp(np.linspace(np.log(PERIOD_MIN), np.log(pmax), N_COARSE))
     res = bls.power(coarse, DURATIONS, objective="likelihood")
     power = np.asarray(res.power)
