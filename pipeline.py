@@ -32,6 +32,17 @@ def sg_detrend(f, cadence, window_days=DETREND_WINDOW_DAYS, polyorder=2):
     return trend
 
 
+def sigma_clip(f, sigma=4, iters=3):
+    """Iteratively mask outliers. Returns boolean mask of good points."""
+    mask = np.ones(len(f), bool)
+    for _ in range(iters):
+        med = np.median(f[mask])
+        mad = np.median(np.abs(f[mask] - med))
+        std = 1.4826 * mad
+        mask = np.abs(f - med) < sigma * std
+    return mask
+
+
 def clean(df, window_days=DETREND_WINDOW_DAYS):
     m = (df.quality.values == 0) & np.isfinite(df.flux.values)
     t, f, q = df.time.values[m], df.flux.values[m].astype(float), df.quarter.values[m]
@@ -41,6 +52,9 @@ def clean(df, window_days=DETREND_WINDOW_DAYS):
         s = q == qq
         med = np.median(f[s])
         f[s] = f[s] / med if med > 0 else 1.0
+    # mask outliers before detrending
+    good = sigma_clip(f)
+    t, f, q = t[good], f[good], q[good]
     cadence = np.median(np.diff(t))
     trend = sg_detrend(f, cadence, window_days)
     ok = np.isfinite(trend) & (trend > 0)
