@@ -31,27 +31,63 @@ def build_dataset(directory, labels_csv, truth_csv):
     merged = labels.merge(truth[["kepid", "injected"]], on="kepid", how="left")
     merged["has_planet"] = ((merged["label"] == 1) | (merged["injected"] == 1)).fillna(0).astype(int)
 
+    # load cached BLS results if available
+    cache_file = f"{directory}_bls_cache.csv"
+    if os.path.exists(cache_file):
+        print(f"  Loading cached BLS results from {cache_file}")
+        cache = pd.read_csv(cache_file)
+    else:
+        cache = pd.DataFrame()
+
     rows = []
     paths = sorted(glob.glob(f"{directory}/*.parquet"))
+    new_cache_rows = []
+
     for i, path in enumerate(paths, 1):
         kepid = int(os.path.basename(path).replace("KIC_", "").replace(".parquet", ""))
         row = merged[merged.kepid == kepid]
         if row.empty:
             continue
         label = int(row.has_planet.values[0])
+
+        # use cache if available
+        if not cache.empty and kepid in cache.kepid.values:
+            cr = cache[cache.kepid == kepid].iloc[0].to_dict()
+            r = {k: cr[k] for k in ["period", "depth_ppm", "duration_hours", "t0", "sde"]}
+            try:
+                t, f = clean(pd.read_parquet(path))
+                if t is None:
+                    continue
+                feats = extract_features(t, f, r)
+                feats["label"] = label
+                feats["kepid"] = kepid
+                rows.append(feats)
+            except Exception as e:
+                print(f"  skipping {kepid}: {e}")
+            print(f"  [{i}/{len(paths)}] KIC_{kepid} (cached) SDE={r['sde']:.1f}", flush=True)
+            continue
+
         try:
             t, f = clean(pd.read_parquet(path))
             if t is None:
                 continue
             r = search(t, f)
+            new_cache_rows.append({**r, "kepid": kepid})
             feats = extract_features(t, f, r)
             feats["label"] = label
             feats["kepid"] = kepid
             rows.append(feats)
         except Exception as e:
             print(f"  skipping {kepid}: {e}")
-        if i % 20 == 0:
-            print(f"  [{i}/{len(paths)}]", flush=True)
+        print(f"  [{i}/{len(paths)}] KIC_{kepid} SDE={r.get('sde', 0):.1f}", flush=True)
+
+    # save new cache entries
+    if new_cache_rows:
+        new_df = pd.DataFrame(new_cache_rows)
+        combined = pd.concat([cache, new_df]).drop_duplicates("kepid")
+        combined.to_csv(cache_file, index=False)
+        print(f"  Saved BLS cache to {cache_file}")
+
     return pd.DataFrame(rows)
 
 
