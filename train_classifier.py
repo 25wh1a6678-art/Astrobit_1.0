@@ -72,21 +72,18 @@ def build_dataset(directory, labels_csv, truth_csv):
             if t is None:
                 continue
             r = search(t, f)
-            new_cache_rows.append({**r, "kepid": kepid})
+            # save to cache immediately after each star
+            new_row = pd.DataFrame([{**r, "kepid": kepid}])
+            cache = pd.concat([cache, new_row]).drop_duplicates("kepid")
+            cache.to_csv(cache_file, index=False)
             feats = extract_features(t, f, r)
             feats["label"] = label
             feats["kepid"] = kepid
             rows.append(feats)
         except Exception as e:
             print(f"  skipping {kepid}: {e}")
+            continue
         print(f"  [{i}/{len(paths)}] KIC_{kepid} SDE={r.get('sde', 0):.1f}", flush=True)
-
-    # save new cache entries
-    if new_cache_rows:
-        new_df = pd.DataFrame(new_cache_rows)
-        combined = pd.concat([cache, new_df]).drop_duplicates("kepid")
-        combined.to_csv(cache_file, index=False)
-        print(f"  Saved BLS cache to {cache_file}")
 
     return pd.DataFrame(rows)
 
