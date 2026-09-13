@@ -7,10 +7,10 @@ import glob
 import os
 import pickle
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 
 from features import extract_features
@@ -19,6 +19,22 @@ from pipeline import clean, search
 warnings.filterwarnings("ignore")
 
 DEV_DIR = "dev"
+CACHE_FILE = "dev_bls_cache.csv"
+N_WORKERS = 4
+
+
+def process_star(path):
+    warnings.filterwarnings("ignore")
+    kepid = int(os.path.basename(path).replace("KIC_", "").replace(".parquet", ""))
+    try:
+        t, f = clean(pd.read_parquet(path))
+        if t is None:
+            return kepid, None, None, None
+        r = search(t, f)
+        feats = extract_features(t, f, r)
+        return kepid, r, feats, (t, f)
+    except Exception:
+        return kepid, None, None, None
 
 
 def build_dev_features():
@@ -27,26 +43,51 @@ def build_dev_features():
     merged = labels.merge(truth[["kepid", "injected"]], on="kepid", how="left")
     merged["has_planet"] = ((merged["label"] == 1) | (merged["injected"] == 1)).fillna(0).astype(int)
 
+    cache = pd.read_csv(CACHE_FILE) if os.path.exists(CACHE_FILE) else pd.DataFrame()
+    cached_ids = set(cache.kepid.values) if not cache.empty else set()
+
+    all_paths = sorted(glob.glob(f"{DEV_DIR}/*.parquet"))
+    pending = [p for p in all_paths
+               if int(os.path.basename(p).replace("KIC_", "").replace(".parquet", ""))
+               not in cached_ids]
+
+    print(f"  {len(cached_ids)} cached, {len(pending)} to process ({N_WORKERS} workers)")
+
+    new_cache_rows = []
+    done = 0
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as ex:
+        futures = {ex.submit(process_star, p): p for p in pending}
+        for fut in as_completed(futures):
+            kepid, r, feats, _ = fut.result()
+            done += 1
+            if r is not None:
+                new_cache_rows.append({**r, "kepid": kepid})
+                new_df = pd.DataFrame(new_cache_rows)
+                combined = pd.concat([cache, new_df]).drop_duplicates("kepid")
+                combined.to_csv(CACHE_FILE, index=False)
+            print(f"  [{len(cached_ids)+done}/{len(all_paths)}] KIC_{kepid}"
+                  f"  SDE={r['sde']:.1f}" if r else f"  [{done}] KIC_{kepid} FAILED",
+                  flush=True)
+
+    cache = pd.read_csv(CACHE_FILE) if os.path.exists(CACHE_FILE) else pd.DataFrame()
     rows = []
-    paths = sorted(glob.glob(f"{DEV_DIR}/*.parquet"))
-    for i, path in enumerate(paths, 1):
+    for path in all_paths:
         kepid = int(os.path.basename(path).replace("KIC_", "").replace(".parquet", ""))
         row = merged[merged.kepid == kepid]
-        if row.empty:
+        if row.empty or cache.empty or kepid not in cache.kepid.values:
             continue
         label = int(row.has_planet.values[0])
+        cr = cache[cache.kepid == kepid].iloc[0].to_dict()
+        r = {k: cr[k] for k in ["period", "depth_ppm", "duration_hours", "t0", "sde"]}
         try:
             t, f = clean(pd.read_parquet(path))
             if t is None:
                 continue
-            r = search(t, f)
             feats = extract_features(t, f, r)
             feats["label"] = label
             rows.append(feats)
-        except Exception as e:
-            print(f"  skipping {kepid}: {e}")
-        if i % 10 == 0:
-            print(f"  [{i}/{len(paths)}]", flush=True)
+        except Exception:
+            continue
     return pd.DataFrame(rows)
 
 
