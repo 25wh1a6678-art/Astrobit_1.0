@@ -147,7 +147,12 @@ def run_split(directory):
                 feats = extract_features(t, f, r)
                 X = np.array([[feats[c] for c in model["features"]]])
                 X = model["scaler"].transform(X)
-                conf = float(model["clf"].predict_proba(X)[0, 1])
+                raw_conf = float(model["clf"].predict_proba(X)[0, 1])
+                # apply Platt calibration if available
+                if "platt" in model:
+                    conf = float(model["platt"].predict_proba([[raw_conf]])[0, 1])
+                else:
+                    conf = raw_conf
             except Exception:
                 conf = confidence_from_sde(s)
         else:
