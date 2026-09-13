@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 submission.csv
 private/
+*_bls_cache.csv
+*_features.csv
+model.pkl
