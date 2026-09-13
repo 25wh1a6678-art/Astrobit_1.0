@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from astropy.timeseries import BoxLeastSquares
+from scipy.signal import savgol_filter
 
 warnings.filterwarnings("ignore")
 
@@ -20,6 +21,15 @@ N_PEAKS = 8
 N_FINE = 600
 DURATIONS = np.array([0.05, 0.1, 0.2, 0.4, 0.8])
 SDE_THRESHOLD = 10.0
+
+
+def sg_detrend(f, cadence, window_days=DETREND_WINDOW_DAYS, polyorder=2):
+    """Savitzky-Golay detrend: smoother than running median, better edge handling."""
+    k = max(polyorder + 2, int(window_days / cadence) | 1)  # must be odd
+    if k % 2 == 0:
+        k += 1
+    trend = savgol_filter(f, window_length=k, polyorder=polyorder)
+    return trend
 
 
 def clean(df, window_days=DETREND_WINDOW_DAYS):
