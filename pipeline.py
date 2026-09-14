@@ -161,8 +161,7 @@ def run_split(directory):
             "depth_ppm": round(r["depth_ppm"], 1) if hit else None,
             "duration_hours": round(r["duration_hours"], 3) if hit else None,
         })
-        if i % 10 == 0:
-            print(f"  [{i}/{len(paths)}]", flush=True)
+        print(f"  [{i}/{len(paths)}] {sid}  SDE={s:.1f}  conf={conf:.3f}", flush=True)
     return pd.DataFrame(out)
 
 
